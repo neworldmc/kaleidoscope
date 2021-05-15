@@ -1,10 +1,14 @@
+@file:OptIn(ExperimentalContracts::class)
 package site.neworld.utils
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
 
-interface SyncClosable : AutoCloseable
+typealias SyncClosable = AutoCloseable
 
 interface AsyncClosable : SyncClosable {
     suspend fun closeAsync()
@@ -13,10 +17,12 @@ interface AsyncClosable : SyncClosable {
 }
 
 inline fun <T : SyncClosable?, R> T.use(block: T.() -> R): R {
+    contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
     return runCatching { block() }.fold({ it.also { this?.close() } }, { throw it.suppress { this?.close() } })
 }
 
 suspend inline fun <T : AsyncClosable?, R> T.use(block: T.() -> R): R {
+    contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
     return runCatching { block() }.fold(
         { it.also { this?.closeAsync() } },
         { throw it.suppress { this?.closeAsync() } })
@@ -103,6 +109,7 @@ class ClosingContext(var shade: Throwable?) {
 }
 
 inline fun close(block: ClosingContext.() -> Unit) {
+    contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
     ClosingContext(null).apply(block).shade.also { if (it != null) throw it }
 }
 
@@ -124,14 +131,29 @@ fun autoCloseContext() = object : AutoCloseContext {
 }
 
 inline fun <T> autoClose(content: AutoCloseContext.() -> T): T {
+    contract { callsInPlace(content, InvocationKind.EXACTLY_ONCE) }
     return autoCloseContext().use(content)
 }
 
 inline fun <T> safeStart(content: AutoCloseContext.() -> T): T {
+    contract { callsInPlace(content, InvocationKind.EXACTLY_ONCE) }
     val context = autoCloseContext()
     try {
         return context.content()
     } catch (e: Throwable) {
         throw e.also { context.close() }
     }
+}
+
+inline fun <T : SyncClosable?, R> T.safeInit(block: T.() -> R): R {
+    contract { callsInPlace(block, InvocationKind.EXACTLY_ONCE) }
+    return runCatching { block() }.fold({ it }, { throw it.suppress { this?.close() } })
+}
+
+fun warnDanglingResourceCleanup(obj: Any) {
+    println("Unclosed closable resource $obj of ${obj::class.qualifiedName} finalized")
+}
+
+abstract class AResource: SyncClosable {
+    fun finalize() = close().also { warnDanglingResourceCleanup(this) }
 }
